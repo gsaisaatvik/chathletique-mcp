@@ -7,23 +7,21 @@ from dotenv import load_dotenv
 from geopy.exc import GeocoderServiceError, GeocoderTimedOut
 from geopy.geocoders import Nominatim
 
-from .mcp_utils import mcp
+# No longer using FastMCP decorators
 
 # -------------------------------- Globals --------------------------------
 load_dotenv()
 token = os.getenv("WEATHER_API_KEY")
 if not token:
-    print("Error: WEATHER_API_KEY not found in .env file")
-    exit(1)
+    print("Warning: WEATHER_API_KEY not found in .env file. Weather tools will not work.")
 
 
 # -------------------------------- Tools --------------------------------
-@mcp.tool(
-    title="Get Weather Predictions",
-    description="Return some future weather information for where the user lives. the place where the user lives is found by looking at where previous runs is located ",
-)
 def get_weather_prediction(place_name: str) -> str:
     """Loads positions from run_positions.txt and returns weather forecast as a dict."""
+    if not token:
+        return "Error: Weather API key not configured. Please set WEATHER_API_KEY in your environment."
+        
     base_url = "http://api.openweathermap.org/data/2.5/forecast"
 
     longitude, latitude = _get_coordinates(place_name)

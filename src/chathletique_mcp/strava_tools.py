@@ -13,22 +13,54 @@ import openrouteservice
 import polyline
 import requests
 import stravalib
+from stravalib.exc import Fault
 from dotenv import load_dotenv
 from geopy.exc import GeocoderServiceError, GeocoderTimedOut
 from geopy.geocoders import Nominatim
 from pydantic import BaseModel, Field
+from functools import wraps
 
-from .mcp_utils import get_current_token, mcp
+from .mcp_utils import get_current_token
 
 # -------------------------------- Globals --------------------------------
 load_dotenv()
 
 ors_api_key = os.getenv("ORS_KEY")
-client_ors = openrouteservice.Client(key=ors_api_key)
 google_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+
+# Initialize OpenRouteService client only if key is available
+if ors_api_key:
+    client_ors = openrouteservice.Client(key=ors_api_key)
+else:
+    client_ors = None
+
 ROUTES_URL = (
     "https://routes.googleapis.com/directions/v2:computeRoutes"  # Google Map URL
 )
+
+
+def handle_strava_error(func):
+    """Decorator to handle Strava API errors gracefully."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Fault as e:
+            if "access_token" in str(e) and "invalid" in str(e):
+                return f"ERROR: Strava Authentication Error: Your access token is invalid or expired.\n\n" \
+                       f"To fix this:\n" \
+                       f"1. Go to https://www.strava.com/settings/api\n" \
+                       f"2. Get a new access token from your app\n" \
+                       f"3. Update STRAVA_ACCESS_TOKEN in your servers_config.json\n" \
+                       f"4. Restart the MCP server\n\n" \
+                       f"The integration is working correctly - you just need a fresh token!"
+            else:
+                return f"ERROR: Strava API Error: {str(e)}\n\n" \
+                       f"This might be a temporary issue. Try again in a few minutes."
+        except Exception as e:
+            return f"ERROR: Unexpected Error: {str(e)}\n\n" \
+                   f"Please check your internet connection and try again."
+    return wrapper
 
 
 def get_strava_client():
@@ -54,81 +86,105 @@ class Coordinates(BaseModel):
 # -------------------------------- Tools --------------------------------
 
 
-@mcp.tool(
-    title="Get Authenticated user Strava Stats",
-    description="Return the Strava stats of the user as a JSON File ",
-)
+@handle_strava_error
 def get_user_stats() -> str:
     """Get current user's Strava statistics.
 
     Returns:
-        str: JSON string containing user stats including total distance,
+        str: Formatted string containing user stats including total distance,
             activity count, and performance metrics.
     """
     client_strava = get_strava_client()
-    athlete_id = client_strava.get_athlete().id  # APi call
-    ahtlete_stats = client_strava.get_athlete_stats(athlete_id)
-    dict = {
-        "recent_run_totals": ahtlete_stats.recent_run_totals.model_dump_json(),
-        "ytd_run_totals": ahtlete_stats.ytd_run_totals.model_dump_json(),
-        "all_run_totals": ahtlete_stats.all_run_totals.model_dump_json(),
-    }
+    athlete_id = client_strava.get_athlete().id  # API call
+    athlete_stats = client_strava.get_athlete_stats(athlete_id)
+    
+    # Extract actual values from the stats
+    recent_totals = athlete_stats.recent_run_totals
+    ytd_totals = athlete_stats.ytd_run_totals
+    all_totals = athlete_stats.all_run_totals
+    
+    # Format the data in a clear, readable way
+    result = f"""STRAVA STATISTICS:
 
-    return str(dict)
+RECENT RUNS (Last 4 weeks):
+- Total Distance: {recent_totals.distance / 1000:.2f} km
+- Total Runs: {recent_totals.count}
+- Total Time: {recent_totals.moving_time / 3600:.2f} hours
+- Elevation Gain: {recent_totals.elevation_gain:.0f} meters
+
+YEAR TO DATE:
+- Total Distance: {ytd_totals.distance / 1000:.2f} km
+- Total Runs: {ytd_totals.count}
+- Total Time: {ytd_totals.moving_time / 3600:.2f} hours
+- Elevation Gain: {ytd_totals.elevation_gain:.0f} meters
+
+ALL TIME:
+- Total Distance: {all_totals.distance / 1000:.2f} km
+- Total Runs: {all_totals.count}
+- Total Time: {all_totals.moving_time / 3600:.2f} hours
+- Elevation Gain: {all_totals.elevation_gain:.0f} meters
+
+Note: These are your actual Strava statistics. If you see 0 values, it means you don't have any running activities recorded in your Strava account yet."""
+
+    return result
 
 
-@mcp.tool(
-    title="Get Last Runs",
-    description="Get the last runs from the user's Strava account and return them in a list for activity analysis",
-)
-def get_last_runs() -> str:
-    """Get the last runs from the user's Strava account and return them in a list for activity analysis
-    This function will use the Strava API to get the last runs from the user's Strava account and return them in a list for activity analysis
+@handle_strava_error
+def get_last_runs(count: int = 5) -> str:
+    """Get the last runs from the user's Strava account and return them in a formatted list for activity analysis
+    This function will use the Strava API to get the last runs from the user's Strava account and return them in a formatted list for activity analysis
     The function will return a list of runs with the following information:
     name, distance, type, start_date_local, moving_time, average_speed, max_speed, max_heartrate, average_heartrate, total_elevation_gain, average_speed
 
     """
-    text_result: str = ""
-
-    # Get the last 10 runs
+    # Get the last runs
     client_strava = get_strava_client()
-    activities = client_strava.get_activities(limit=2)
+    activities = client_strava.get_activities(limit=count)
+
+    if not activities:
+        return "No activities found in your Strava account. Please add some running activities to see your data here."
+
+    result = f"LAST {count} RUNNING ACTIVITIES:\n\n"
+    run_count = 0
 
     # Extract the data from the activities
     for activity in activities:
         if activity.type != "Run":
             continue
+            
+        run_count += 1
+        
+        # Calculate pace in min/km
+        pace_min_per_km = "N/A"
+        if activity.average_speed and activity.average_speed > 0:
+            pace_seconds_per_km = 1000 / activity.average_speed
+            pace_minutes = pace_seconds_per_km / 60
+            pace_min_per_km = f"{int(pace_minutes)}:{int((pace_minutes % 1) * 60):02d}"
 
-        activity_data = {
-            "name": str(activity.name),
-            "distance": str(activity.distance),
-            "type": str(activity.type),
-            "start_date_local": str(activity.start_date_local),
-            "moving_time": str(activity.moving_time),
-            "average_speed (m/s)": str(activity.average_speed),
-            "max_speed (m/s)": str(activity.max_speed),
-            "max_heartrate": str(activity.max_heartrate),
-            "average_heartrate": str(activity.average_heartrate),
-            "total_elevation_gain": str(activity.total_elevation_gain),
-            "average_pace (min/km)": str(1000 / activity.average_speed / 60),
-        }
+        result += f"RUN #{run_count}:\n"
+        result += f"- Name: {activity.name}\n"
+        result += f"- Date: {activity.start_date_local}\n"
+        result += f"- Distance: {activity.distance / 1000:.2f} km\n"
+        result += f"- Time: {activity.moving_time / 60:.0f} minutes\n"
+        result += f"- Average Pace: {pace_min_per_km} min/km\n"
+        result += f"- Elevation Gain: {activity.total_elevation_gain:.0f} meters\n"
+        if activity.average_heartrate:
+            result += f"- Average Heart Rate: {activity.average_heartrate} bpm\n"
+        if activity.max_heartrate:
+            result += f"- Max Heart Rate: {activity.max_heartrate} bpm\n"
+        result += "\n"
 
-        text_result += json.dumps(activity_data) + "\n"
+    if run_count == 0:
+        return f"No running activities found in your last {count} activities. Please add some running activities to see your data here."
 
-    return text_result
+    return result
 
 
-@mcp.tool(
-    title="Create Itinerary",
-    description="Create an itinerary for the user",
-)
+@handle_strava_error
 def create_itinerary(
-    starting_place: str = Field(
-        description="The start of the itinerary", default="Opéra, Paris"
-    ),
-    distance_km: int = Field(
-        description="The distance of the itinerary in km", default=10
-    ),
+    start_location: str,
+    end_location: str,
+    distance_km: float,
 ) -> str:
     """Produces an itinerary for the user
 
@@ -197,6 +253,9 @@ def create_itinerary(
         mode: "WALK" | "DRIVE" | "BICYCLE" | "TWO_WHEELER"
         Retourne dict avec distance (m), durée ISO, et polyline encodée.
         """
+        if not api_key:
+            raise ValueError("Google Maps API key is required for route computation. Please set GOOGLE_MAPS_API_KEY in your environment.")
+            
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": api_key,
@@ -354,22 +413,19 @@ def create_itinerary(
 
         return "No segment found"
 
-    start_coords = get_coordinates(starting_place)
-    distance_m = int(distance_km) * 10000
+    start_coords = get_coordinates(start_location)
+    distance_m = int(distance_km * 1000)
     bounds = bounds_for_run(start_coords[0], start_coords[1], distance_m)
     list_segment = []
     for bound in bounds:
         list_segment.append(get_segments(bound))
-    path = create_path(list_segment, 10000, start_coords)
+    path = create_path(list_segment, distance_m, start_coords)
     maps = _get_gmaps_directions_link(path[0], path[1])
 
     return maps
 
 
-@mcp.tool(
-    title="Get Heart Rate and Speed Figures",
-    description="Get heart rate and speed figures for the last activities of the user",
-)
+@handle_strava_error
 def figures_speed_hr_by_activity(
     number_of_activity: int,
     resolution: str = "high",

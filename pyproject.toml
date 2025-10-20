@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A Model Context Protocol server providing AI assistants with Strava running data, route planning, and weather information for intelligent running coaching"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 authors = [
     { name = "Colin Frisch", email = "colin.frisch@student-cs.fr" },
 ]
@@ -14,7 +14,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.11",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
     "Topic :: Scientific/Engineering :: GIS",
@@ -71,7 +71,7 @@ packages = ["src/chathletique_mcp"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py313"
+target-version = "py311"
 lint.select = [
     # "ANN", # annotations TODO - enable when ready for strict type annotations
     "B",   # bugbear - catches common Python gotchas
@@ -120,7 +120,7 @@ known-first-party = ["strava_mcp"]
 
 [tool.black]
 line-length = 88
-target-version = ['py313']
+target-version = ['py311']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -137,7 +137,7 @@ extend-exclude = '''
 '''
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
